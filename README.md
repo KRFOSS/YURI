@@ -11,10 +11,11 @@
 4. Response<─────────\|__|                    
 ```
 
----
-
 ```txt
 1. Request to YU-RI
 2. Cache Check ----> HIT = 4. Response
                 └--> MISS = 3. Upstream ---> 4. Response
 ```
+
+---
+
