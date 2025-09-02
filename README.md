@@ -19,3 +19,8 @@
 
 ---
 
+## Build
+
+```bash
+cargo build -r
+```
