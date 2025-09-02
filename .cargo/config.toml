@@ -1,0 +1,21 @@
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "musl-gcc"
+
+[profile.dev]
+opt-level = 1
+debug = true
+split-debuginfo = "unpacked"
+incremental = true
+
+[cargo-new]
+name = "yu-ri"
+email = "me@nergis.dev"
+
+[registries.crates-io]
+protocol = "sparse"
+
+[env]
+CARGO_TARGET_DIR = "target"
