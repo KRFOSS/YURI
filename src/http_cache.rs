@@ -1,4 +1,5 @@
 use http::HeaderMap;
+use tracing::debug;
 use std::time::{Duration, SystemTime};
 
 /// 결과 TTL 및 캐시 여부 판단용
@@ -47,6 +48,7 @@ pub fn derive_ttl(headers: &HeaderMap, now: SystemTime) -> TtlDecision {
         .get(header::CACHE_CONTROL)
         .and_then(|v| v.to_str().ok())
     {
+        debug!(target: "http_cache", cache_control = cc_val, "Parsing Cache-Control header");
         let mut max_age: Option<i64> = None;
         let mut s_maxage: Option<i64> = None;
         let mut swr: Option<i64> = None;
@@ -54,6 +56,7 @@ pub fn derive_ttl(headers: &HeaderMap, now: SystemTime) -> TtlDecision {
             let token = part.trim().to_ascii_lowercase();
             if token == "no-store" || token == "no-cache" || token == "private" {
                 // private 은 공유 캐시 입장에서 비캐시 처리
+                debug!(target: "http_cache", directive = token, "Cache-Control directive forces non-cacheable");
                 return TtlDecision::not_cacheable();
             }
             if let Some(rest) = token.strip_prefix("s-maxage=") {
@@ -73,13 +76,18 @@ pub fn derive_ttl(headers: &HeaderMap, now: SystemTime) -> TtlDecision {
         let chosen = s_maxage.or(max_age);
         if let Some(sec) = chosen {
             if sec == 0 {
+                debug!(target: "http_cache", ttl = sec, "Chosen TTL is zero => non-cacheable");
                 return TtlDecision::not_cacheable();
             }
             let mut d = TtlDecision::with_ttl(Duration::from_secs(sec as u64));
             if let Some(s) = swr {
                 if s > 0 {
                     d.stale_while_revalidate = Some(Duration::from_secs(s as u64));
+                    debug!(target: "http_cache", ttl_secs = sec, swr_secs = s, "Derived TTL with stale-while-revalidate");
                 }
+            }
+            if d.stale_while_revalidate.is_none() {
+                debug!(target: "http_cache", ttl_secs = sec, "Derived TTL from Cache-Control");
             }
             return d;
         }
@@ -91,16 +99,20 @@ pub fn derive_ttl(headers: &HeaderMap, now: SystemTime) -> TtlDecision {
             if let Ok(diff) = exp_time.duration_since(now) {
                 // 0 초면 비캐시로 간주 (혹은 default? 여기선 비캐시)
                 if diff.as_secs() == 0 {
+                    debug!(target: "http_cache", expires = exp_val, "Expires header is now => non-cacheable");
                     return TtlDecision::not_cacheable();
                 }
+                debug!(target: "http_cache", expires = exp_val, ttl_secs = diff.as_secs(), "Derived TTL from Expires header");
                 return TtlDecision::with_ttl(diff);
             } else {
                 // 이미 지난날 => 비캐시
+                debug!(target: "http_cache", expires = exp_val, "Expires header is in the past => non-cacheable");
                 return TtlDecision::not_cacheable();
             }
         }
     }
     // 기본
+    debug!(target: "http_cache", "No explicit TTL headers => using default cacheable policy");
     TtlDecision::default_cacheable()
 }
 

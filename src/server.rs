@@ -22,7 +22,10 @@ pub async fn run(config: Config) -> Result<()> {
     )
     .await?;
     let addr = config.listen_addr.parse().unwrap();
-    let shared = Arc::new((config, cache));
+    // 재사용 가능한 HTTPS 클라이언트 (connection pooling)
+    let https = HttpsConnector::new();
+    let client: Client<_, hyper::Body> = Client::builder().build(https);
+    let shared = Arc::new((config, cache, client));
 
     // Cron 기반 캐시 전체 삭제 스케줄러 (옵션)
     if let Some(cron_expr) = shared.0.cache_clear_cron.clone() {
@@ -78,9 +81,9 @@ pub async fn run(config: Config) -> Result<()> {
 
 async fn handle(
     req: Request<Body>,
-    shared: Arc<(Config, DiskCache)>,
+    shared: Arc<(Config, DiskCache, Client<HttpsConnector<hyper::client::HttpConnector>, hyper::Body>)>,
 ) -> Result<Response<Body>, hyper::Error> {
-    let (config, cache) = (&shared.0, &shared.1);
+    let (config, cache, client) = (&shared.0, &shared.1, &shared.2);
     if req.method() != http::Method::GET {
         return Ok(simple(StatusCode::METHOD_NOT_ALLOWED, "Only GET supported"));
     }
@@ -231,8 +234,7 @@ async fn handle(
     }
 
     // Fetch from upstream (support http & https)
-    let https = HttpsConnector::new();
-    let client: Client<_, hyper::Body> = Client::builder().build(https);
+    // 재사용 client (connection pool)
     // Upstream 요청 시 User-Agent 고정 설정
     let ua_header = http::HeaderValue::from_static("RFMP/1.0");
     let upstream_req = Request::builder()
@@ -425,16 +427,11 @@ async fn handle(
 async fn background_refresh(
     cache_key: String,
     base_cache_key: String,
-    shared: Arc<(Config, DiskCache)>,
+    shared: Arc<(Config, DiskCache, Client<HttpsConnector<hyper::client::HttpConnector>, hyper::Body>)>,
 ) -> Result<(), anyhow::Error> {
-    let (_config, cache) = (&shared.0, &shared.1); // 현재는 config 사용 안함 (향후 조건부 재검증에 활용)
-    let upstream_url = cache_key
-        .split("||")
-        .next()
-        .unwrap_or(&cache_key)
-        .to_string();
-    let https = HttpsConnector::new();
-    let client: Client<_, hyper::Body> = Client::builder().build(https);
+    let (_config, cache, client) = (&shared.0, &shared.1, &shared.2);
+    // base_cache_key 로 재검증 (간단한 fresh fetch). 기존 variant 값은 유지 목적
+    let upstream_url = base_cache_key;
     if let Ok(up_resp) = {
         let upstream_req = Request::builder()
             .method(http::Method::GET)
@@ -456,35 +453,14 @@ async fn background_refresh(
                     .map(|s| s.to_string());
                 let decision = derive_ttl(&headers, std::time::SystemTime::now());
                 if decision.cacheable {
-                    let mut variant_key = cache_key.clone();
-                    if let Some(vary_val) = headers.get(header::VARY).and_then(|v| v.to_str().ok())
-                    {
-                        let names: Vec<String> = vary_val
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        if !names.is_empty() {
-                            let _ = cache.set_vary_header_names(&base_cache_key, &names).await;
-                            let mut parts: Vec<String> = Vec::new();
-                            // NOTE: 백그라운드 재검증시 Request 헤더 값이 없으므로 key 는 기존 cache_key 유지
-                            for name in names.iter() {
-                                parts.push(format!("{}=", name));
-                            }
-                            if !parts.is_empty() {
-                                variant_key = format!("{}||{}", base_cache_key, parts.join("&"));
-                            }
-                        }
-                    }
-                    let _ = cache
-                        .put(
-                            &variant_key,
-                            &body_bytes,
-                            ct,
-                            decision.ttl,
-                            decision.stale_while_revalidate,
-                        )
-                        .await;
+                    // 기존 cache_key 덮어쓰기 (variant 유지)
+                    let _ = cache.put(
+                        &cache_key,
+                        &body_bytes,
+                        ct,
+                        decision.ttl,
+                        decision.stale_while_revalidate,
+                    ).await;
                 }
             }
         }
