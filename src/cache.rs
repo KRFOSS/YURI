@@ -1,7 +1,7 @@
 use anyhow::Result;
+use blake3;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::{
     path::{Path, PathBuf},
@@ -73,9 +73,9 @@ impl DiskCache {
     }
 
     fn key_path(&self, key: &str) -> PathBuf {
-        let mut hasher = Sha256::new();
+        let mut hasher = blake3::Hasher::new();
         hasher.update(key.as_bytes());
-        let hash = hex::encode(hasher.finalize());
+        let hash = hasher.finalize().to_hex().to_string();
         let (a, b) = hash.split_at(2);
         self.root.join(a).join(b)
     }
